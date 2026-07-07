@@ -24,6 +24,14 @@ from pathlib import Path
 
 MAX_HASH_BYTES = 50 * 1024 * 1024  # skip hashing files bigger than this
 
+# When running from a monorepo subdirectory, a worktree checks out the WHOLE
+# repo working tree. If far more tracked files live outside the subdirectory
+# than in it, checking them all out is both wasteful and surprising (the
+# classic footgun: a project that merely sits under a git-managed home dir).
+# Past this many files-outside-the-subdir, "auto" prefers a copy of just the
+# subdirectory; explicit "worktree" still proceeds but warns.
+SUBDIR_WORKTREE_FILE_LIMIT = 4000
+
 
 def _hash_file(path: Path) -> str:
     h = hashlib.sha256()
@@ -91,6 +99,21 @@ def worktree_eligible(project_root: Path) -> tuple[bool, str, str]:
     return True, "", subpath
 
 
+def _tracked_counts(project_root: Path) -> tuple[int, int]:
+    """Return ``(files tracked in the whole repo, files tracked under
+    project_root)``. Reads the index via `git ls-files` — no checkout — so it
+    is cheap even on large repos. On any git error the counts are 0, which
+    disables the size guard (fail open toward the requested backend)."""
+    code_top, top = _git(project_root, "rev-parse", "--show-toplevel")
+    if code_top != 0:
+        return 0, 0
+    code_t, out_t = _git(Path(top.strip()), "ls-files", "-z")
+    code_s, out_s = _git(project_root, "ls-files", "-z")
+    n_total = out_t.count("\0") if code_t == 0 else 0
+    n_sub = out_s.count("\0") if code_s == 0 else 0
+    return n_total, n_sub
+
+
 def _dirty_entries(project_root: Path) -> list[tuple[str, str, str | None]]:
     """Parse `git status --porcelain -z` into (status, path, orig_path)."""
     code, out = _git(project_root, "status", "--porcelain",
@@ -134,6 +157,7 @@ class Sandbox:
     repo_toplevel: Path | None = None  # real repo root; None for copy
     subpath: str = ""                  # POSIX rel path, repo root -> project
     overlay_baseline: set[str] = field(default_factory=set)
+    notice: str = ""                   # user-facing heads-up from creation
 
     def __post_init__(self) -> None:
         if self.checkout_root is None:
@@ -148,10 +172,29 @@ class Sandbox:
         if mode not in ("auto", "copy", "worktree"):
             raise ValueError(f"unknown sandbox mode: {mode}")
         if mode != "copy":
-            eligible, reason, _subpath = worktree_eligible(project_root)
+            eligible, reason, subpath = worktree_eligible(project_root)
             if eligible:
+                notice = ""
+                if subpath:  # monorepo subdir: guard against a huge checkout
+                    n_total, n_sub = _tracked_counts(project_root)
+                    if n_total - n_sub > SUBDIR_WORKTREE_FILE_LIMIT:
+                        if mode == "auto":
+                            sb = cls._create_copy(project_root, base, name,
+                                                  ignores)
+                            sb.notice = (
+                                f"'{subpath}' is a small part of a "
+                                f"{n_total}-file repo — sandboxing just this "
+                                f"directory with a copy instead of a whole-repo "
+                                f"worktree (use --sandbox worktree to force).")
+                            return sb
+                        notice = (
+                            f"worktree checks out the whole {n_total}-file "
+                            f"repo, not just '{subpath}' ({n_sub} files) — use "
+                            f"--sandbox copy to sandbox only this directory.")
                 try:
-                    return cls._create_worktree(project_root, base, name, ignores)
+                    sb = cls._create_worktree(project_root, base, name, ignores)
+                    sb.notice = notice
+                    return sb
                 except RuntimeError:
                     if mode == "worktree":
                         raise

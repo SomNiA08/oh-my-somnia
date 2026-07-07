@@ -8,6 +8,7 @@ from pathlib import Path
 
 import pytest
 
+from oh_my_somnia import sandbox as sandbox_mod
 from oh_my_somnia.sandbox import Sandbox, worktree_eligible
 
 GIT = shutil.which("git")
@@ -219,5 +220,54 @@ class TestOutOfSubdir:
         try:
             (sb.path / "a.txt").write_text("x", encoding="utf-8")
             assert sb.out_of_subdir_changes() == []
+        finally:
+            sb.destroy()
+
+
+class TestSubdirWorktreeGuard:
+
+    def _repo_small_subdir_big_outside(self, tmp_path):
+        repo = _init_repo(tmp_path / "repo")
+        _write(repo, "pkg/app/a.txt", "committed")   # 1 file inside subdir
+        _write(repo, "other/b.txt", "sibling")        # 2 files outside subdir
+        _write(repo, "other/c.txt", "sibling")
+        _commit(repo)
+        return repo
+
+    def test_auto_falls_back_to_copy_when_outside_large(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(sandbox_mod, "SUBDIR_WORKTREE_FILE_LIMIT", 1)
+        repo = self._repo_small_subdir_big_outside(tmp_path)
+        sb = Sandbox.create(repo / "pkg" / "app", tmp_path / "sb", "gen-0",
+                            ignores=set(), mode="auto")
+        try:
+            assert sb.kind == "copy"
+            assert sb.subpath == ""
+            assert "copy" in sb.notice.lower()
+            assert (sb.path / "a.txt").read_text(encoding="utf-8") == "committed"
+            # Only the subdir was materialized — no sibling package.
+            assert not (sb.path / "other").exists()
+        finally:
+            sb.destroy()
+
+    def test_worktree_mode_warns_but_proceeds(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(sandbox_mod, "SUBDIR_WORKTREE_FILE_LIMIT", 1)
+        repo = self._repo_small_subdir_big_outside(tmp_path)
+        sb = Sandbox.create(repo / "pkg" / "app", tmp_path / "sb", "gen-0",
+                            ignores=set(), mode="worktree")
+        try:
+            assert sb.kind == "worktree"
+            assert sb.subpath == "pkg/app"
+            assert "worktree" in sb.notice.lower()
+        finally:
+            sb.destroy()
+
+    def test_no_fallback_within_limit(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(sandbox_mod, "SUBDIR_WORKTREE_FILE_LIMIT", 1000)
+        repo = self._repo_small_subdir_big_outside(tmp_path)
+        sb = Sandbox.create(repo / "pkg" / "app", tmp_path / "sb", "gen-0",
+                            ignores=set(), mode="auto")
+        try:
+            assert sb.kind == "worktree"
+            assert sb.notice == ""
         finally:
             sb.destroy()

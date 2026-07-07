@@ -92,6 +92,8 @@ async def _run_generation(task: str, gen: int, *, project: Path, cfg: Config,
         sandbox = Sandbox.create(project, sandbox_root() / run_id, f"gen-{gen}",
                                  cfg.ignores, mode=cfg.sandbox)
         _say(f"  [gen {gen}] sandbox ready ({sandbox.kind}): {sandbox.path}")
+        if sandbox.notice:
+            _say(f"  [gen {gen}] note: {sandbox.notice}")
         workdir = sandbox.path
 
     try:

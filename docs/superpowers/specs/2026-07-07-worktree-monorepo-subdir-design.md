@@ -174,6 +174,22 @@ user, writes files, and commits.
 10. Regression: copy backend from a subdir still works; repo-root worktree still
     works (subpath `""`, all fields collapse).
 
+## Size guard (follow-up, implemented)
+
+Removing the "subdir → ineligible" rejection means a project that merely sits
+*under* a git-managed directory (e.g. a git-managed home dir) would otherwise
+worktree the whole enclosing repo. A whole-repo working-tree checkout is also
+simply slower than copying the subdir when the subdir is a small slice of a big
+repo. So `Sandbox.create` counts tracked files via `git ls-files` (no checkout):
+
+- `SUBDIR_WORKTREE_FILE_LIMIT` (default 4000) files *outside* the subdir is the
+  threshold.
+- **`auto`** past the threshold → build a **copy of just the subdir** and set
+  `Sandbox.notice` explaining the choice.
+- **`worktree`** (explicit) past the threshold → still build the worktree but
+  set `notice` warning that the whole repo is checked out.
+- `cmd_run` prints `notice` after "sandbox ready".
+
 ## Non-goals
 
 - Sparse-checkout (checking out only the subdir) — a full-repo worktree is
