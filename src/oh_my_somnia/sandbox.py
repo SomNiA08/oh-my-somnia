@@ -197,6 +197,7 @@ class Sandbox:
                  kind="worktree", checkout_root=checkout_root,
                  repo_toplevel=repo_toplevel, subpath=subpath)
         sb._overlay_uncommitted()
+        sb.overlay_baseline = sb._porcelain_set()
         sb._take_snapshot()
         return sb
 
@@ -224,6 +225,28 @@ class Sandbox:
             elif src.is_file():
                 dst.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copy2(src, dst)
+
+    def _porcelain_set(self) -> set[str]:
+        """Repo-relative paths currently reported dirty in the checkout."""
+        base = self.checkout_root or self.path
+        return {rel for _status, rel, _orig in _dirty_entries(base)}
+
+    def out_of_subdir_changes(self) -> list[str]:
+        """Repo-relative files the agent changed OUTSIDE `subpath` that merge
+        will not carry back. Best-effort (diffs against the post-overlay
+        baseline); empty for copy sandboxes and repo-root worktrees."""
+        if self.kind != "worktree" or not self.subpath:
+            return []
+        prefix = self.subpath + "/"
+        fresh = self._porcelain_set() - self.overlay_baseline
+        out = []
+        for rel in sorted(fresh):
+            if rel.startswith(prefix):
+                continue  # inside the subdir — merged normally
+            if any(part in self.ignores for part in Path(rel).parts):
+                continue
+            out.append(rel)
+        return out
 
     def _take_snapshot(self) -> None:
         self.snapshot = {

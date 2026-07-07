@@ -178,3 +178,46 @@ class TestOverlay:
             assert not (sb.path / "other").exists()
         finally:
             sb.destroy()
+
+
+class TestOutOfSubdir:
+
+    def _repo_with_subdir(self, tmp_path):
+        repo = _init_repo(tmp_path / "repo")
+        _write(repo, "pkg/app/a.txt", "committed")
+        _write(repo, "other/b.txt", "sibling")
+        _commit(repo)
+        return repo
+
+    def test_flags_edit_outside_subdir(self, tmp_path):
+        repo = self._repo_with_subdir(tmp_path)
+        sb = Sandbox.create(repo / "pkg" / "app", tmp_path / "sb", "gen-0",
+                            ignores=set(), mode="worktree")
+        try:
+            # Agent reaches outside its subdir inside the worktree checkout.
+            (sb.checkout_root / "other" / "b.txt").write_text(
+                "touched by agent", encoding="utf-8")
+            out = sb.out_of_subdir_changes()
+        finally:
+            sb.destroy()
+        assert "other/b.txt" in out
+
+    def test_empty_when_only_inside_subdir(self, tmp_path):
+        repo = self._repo_with_subdir(tmp_path)
+        sb = Sandbox.create(repo / "pkg" / "app", tmp_path / "sb", "gen-0",
+                            ignores=set(), mode="worktree")
+        try:
+            (sb.path / "a.txt").write_text("only inside", encoding="utf-8")
+            assert sb.out_of_subdir_changes() == []
+        finally:
+            sb.destroy()
+
+    def test_empty_for_copy_sandbox(self, tmp_path):
+        repo = self._repo_with_subdir(tmp_path)
+        sb = Sandbox.create(repo / "pkg" / "app", tmp_path / "sb", "gen-0",
+                            ignores=set(), mode="copy")
+        try:
+            (sb.path / "a.txt").write_text("x", encoding="utf-8")
+            assert sb.out_of_subdir_changes() == []
+        finally:
+            sb.destroy()

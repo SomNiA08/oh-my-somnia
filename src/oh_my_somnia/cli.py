@@ -238,6 +238,9 @@ async def cmd_run(args: argparse.Namespace) -> int:
                 _say(f"  ... and {len(merged) - 30} more")
             for rel in skipped:
                 _say(f"  ! skipped {rel} (changed in project since snapshot)")
+            for rel in best.sandbox.out_of_subdir_changes():
+                _say(f"  ! ignored {rel} (outside {best.sandbox.subpath} — "
+                     f"not merged back)")
         except (Exception, KeyboardInterrupt) as exc:
             merge_failed = True
             run_error = f"merge failed midway: {exc}"
