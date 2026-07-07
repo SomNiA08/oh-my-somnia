@@ -56,6 +56,8 @@ pip install -e .
 
 ## 사용법
 
+> 📖 실전 사용법·적용처·발전 방향은 **[사용 가이드](docs/USAGE.md)** 를 참고하세요.
+
 ```bash
 cd your-project
 somnia init                          # .somnia/config.toml 생성 (선택)
