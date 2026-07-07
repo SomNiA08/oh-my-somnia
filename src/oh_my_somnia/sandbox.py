@@ -58,26 +58,35 @@ def _git(repo: Path, *args: str) -> tuple[int, str]:
     return proc.returncode, (proc.stdout or "") + (proc.stderr or "")
 
 
-def worktree_eligible(project_root: Path) -> tuple[bool, str]:
-    """A worktree sandbox is only valid when the project root IS the repo
-    toplevel. A mere subdirectory of some enclosing repo (e.g. a project under
-    a git-managed home directory) would check out the whole enclosing repo —
-    wrong tree, wrong merge paths."""
+def worktree_eligible(project_root: Path) -> tuple[bool, str, str]:
+    """Decide whether a worktree sandbox can be built for ``project_root``.
+
+    Returns ``(eligible, reason, subpath)``. ``subpath`` is the POSIX relative
+    path from the repository toplevel to ``project_root`` — ``""`` when the
+    project IS the toplevel, or e.g. ``"packages/frontend"`` for a monorepo
+    subdirectory. The worktree always checks out the whole repo; ``subpath``
+    tells the sandbox which directory inside it the agent actually works in."""
     code, out = _git(project_root, "rev-parse", "--show-toplevel")
     if code != 0:
-        return False, "not a git repository"
+        return False, "not a git repository", ""
     toplevel = out.strip()
     try:
         # samefile handles Windows 8.3 short paths, case, and slash direction
         same = os.path.samefile(toplevel, project_root)
     except OSError:
         same = Path(toplevel).resolve() == Path(project_root).resolve()
-    if not same:
-        return False, f"project is a subdirectory of the repo at {toplevel}"
+    if same:
+        subpath = ""
+    else:
+        try:
+            rel = Path(project_root).resolve().relative_to(Path(toplevel).resolve())
+        except ValueError:
+            return False, f"project is outside the repo at {toplevel}", ""
+        subpath = rel.as_posix()
     code, _ = _git(project_root, "rev-parse", "--verify", "HEAD")
     if code != 0:
-        return False, "repository has no commits yet"
-    return True, ""
+        return False, "repository has no commits yet", ""
+    return True, "", subpath
 
 
 def _dirty_entries(project_root: Path) -> list[tuple[str, str, str | None]]:
@@ -127,7 +136,7 @@ class Sandbox:
         if mode not in ("auto", "copy", "worktree"):
             raise ValueError(f"unknown sandbox mode: {mode}")
         if mode != "copy":
-            eligible, reason = worktree_eligible(project_root)
+            eligible, reason, _subpath = worktree_eligible(project_root)
             if eligible:
                 try:
                     return cls._create_worktree(project_root, base, name, ignores)
@@ -159,7 +168,7 @@ class Sandbox:
     @classmethod
     def _create_worktree(cls, project_root: Path, base: Path, name: str,
                          ignores: set[str]) -> "Sandbox":
-        eligible, reason = worktree_eligible(project_root)
+        eligible, reason, _subpath = worktree_eligible(project_root)
         if not eligible:
             raise RuntimeError(f"worktree sandbox unavailable: {reason}")
         target = base / name
