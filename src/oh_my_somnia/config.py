@@ -207,7 +207,8 @@ max_turns = 60
 
 # Sandbox backend: "auto" (git worktree when possible, else copy),
 # "worktree", or "copy". Worktrees start from HEAD plus your uncommitted
-# changes and are much faster on large repositories.
+# changes and are much faster on large repositories. They also work when you
+# run somnia from a monorepo subdirectory (scoped to that subdirectory).
 sandbox = "auto"
 
 # Where learned heuristics are stored: "global" shares across all projects,

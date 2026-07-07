@@ -4,7 +4,9 @@ Two backends share the same change-tracking and merge-back logic:
 
 - "copy":     shutil.copytree of the project (works anywhere).
 - "worktree": `git worktree add` of HEAD plus an overlay of the project's
-              uncommitted changes — much faster on large repositories.
+              uncommitted changes — much faster on large repositories. Works
+              from a monorepo subdirectory too: the whole repo is checked out
+              but the agent works in, and only merges back, that subdirectory.
 
 A sandbox snapshots its tree (content hashes), lets an agent mutate it
 freely, and can report/merge exactly what changed. Only the winning
