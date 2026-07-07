@@ -1,4 +1,4 @@
-"""oh-my-darwin: a self-improving agent harness.
+"""oh-my-somnia: a self-improving agent harness.
 
 Plan -> Execute -> Evaluate -> Diagnose -> Mutate -> Trial -> Select.
 Only mutations that measurably improve fitness survive.

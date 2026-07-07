@@ -39,7 +39,7 @@ class Diagnosis:
 async def diagnose(task: str, plan: Plan, fitness: Fitness, transcript_tail: str,
                    *, cwd: Path, cfg: Config) -> Diagnosis:
     prompt = (
-        "You are the DIAGNOSER phase of oh-my-darwin, a self-improving agent "
+        "You are the DIAGNOSER phase of oh-my-somnia, a self-improving agent "
         "harness. A generation just FAILED. Find the true root cause — not "
         "the surface symptom — and extract a lesson the harness can reuse on "
         "future tasks. You may inspect the workspace read-only.\n\n"

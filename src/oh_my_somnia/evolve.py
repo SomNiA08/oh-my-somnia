@@ -1,9 +1,9 @@
-"""`darwin evolve`: offline evolution from accumulated run history.
+"""`somnia evolve`: offline evolution from accumulated run history.
 
 Reads recent history (failures with their diagnoses, discarded patches,
 successes) and proposes candidate genes. Candidates are injected into future
 runs marked "provisional"; they auto-promote after proving themselves in
-passing runs, or can be promoted/removed manually via `darwin genome`.
+passing runs, or can be promoted/removed manually via `somnia genome`.
 """
 
 from __future__ import annotations
@@ -56,7 +56,7 @@ async def evolve(genome: Genome, cfg: Config, limit: int = 30) -> list[str]:
     existing = "\n".join(f"- {g.id}: {g.title}" for g in genome.summary()) or "(empty)"
 
     prompt = (
-        "You are the EVOLVE phase of oh-my-darwin, a self-improving agent "
+        "You are the EVOLVE phase of oh-my-somnia, a self-improving agent "
         "harness. Below is the harness's recent run history. Find recurring "
         "failure patterns or winning behaviors that the current genome does "
         "not yet capture, and propose 0-3 new candidate genes.\n\n"

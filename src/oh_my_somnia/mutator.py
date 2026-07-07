@@ -41,7 +41,7 @@ async def mutate(task: str, diagnosis: Diagnosis, genome: Genome,
         f"- {g.id}: {g.title}" for g in genome.summary()
     ) or "(genome is empty)"
     prompt = (
-        "You are the MUTATOR phase of oh-my-darwin, a self-improving agent "
+        "You are the MUTATOR phase of oh-my-somnia, a self-improving agent "
         "harness. A generation failed and was diagnosed. Propose exactly ONE "
         "patch to the harness's genome (its library of reusable heuristics) "
         "that would prevent this class of failure in the future.\n\n"

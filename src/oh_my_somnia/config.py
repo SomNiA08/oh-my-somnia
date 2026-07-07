@@ -1,7 +1,7 @@
-"""Configuration loading for oh-my-darwin.
+"""Configuration loading for oh-my-somnia.
 
-Precedence (later wins): built-in defaults < ~/.oh-my-darwin/config.toml
-< <project>/.darwin/config.toml < CLI flags.
+Precedence (later wins): built-in defaults < ~/.oh-my-somnia/config.toml
+< <project>/.somnia/config.toml < CLI flags.
 """
 
 from __future__ import annotations
@@ -12,20 +12,46 @@ from dataclasses import dataclass, field, fields
 from pathlib import Path
 
 
-def darwin_home() -> Path:
-    return Path(os.environ.get("OH_MY_DARWIN_HOME", Path.home() / ".oh-my-darwin"))
+def somnia_home() -> Path:
+    """Global state home (genome, history, sandboxes).
+
+    Prefers OH_MY_SOMNIA_HOME; the pre-rename OH_MY_DARWIN_HOME is still
+    honored. On first use this silently migrates a pre-rename ~/.oh-my-darwin
+    directory, so learned genome/history survive the project rename."""
+    for env in ("OH_MY_SOMNIA_HOME", "OH_MY_DARWIN_HOME"):
+        value = os.environ.get(env)
+        if value:
+            return Path(value)
+    home = Path.home() / ".oh-my-somnia"
+    legacy = Path.home() / ".oh-my-darwin"
+    if not home.exists() and legacy.is_dir():
+        try:
+            legacy.rename(home)
+        except OSError:
+            return legacy  # e.g. in use — keep working from the old location
+    return home
+
+
+def project_dir(project_root: Path) -> Path:
+    """Per-project state dir: .somnia/ (new name), falling back to a
+    pre-rename .darwin/ when that's what the project already has."""
+    new = project_root / ".somnia"
+    legacy = project_root / ".darwin"
+    if new.exists() or not legacy.exists():
+        return new
+    return legacy
 
 
 def genome_dir() -> Path:
-    return darwin_home() / "genome"
+    return somnia_home() / "genome"
 
 
 def history_path() -> Path:
-    return darwin_home() / "history.jsonl"
+    return somnia_home() / "history.jsonl"
 
 
 def sandbox_root() -> Path:
-    return darwin_home() / "sandboxes"
+    return somnia_home() / "sandboxes"
 
 
 # NOTE: matching is by bare directory/file NAME at any depth. Deliberately
@@ -36,7 +62,8 @@ DEFAULT_IGNORES = [
     ".git",
     ".hg",
     ".svn",
-    ".darwin",
+    ".somnia",
+    ".darwin",  # pre-rename project state dir
     "node_modules",
     ".venv",
     "venv",
@@ -84,8 +111,8 @@ class Config:
     extra_ignores: list[str] = field(default_factory=list)
     unignore: list[str] = field(default_factory=list)  # names to drop from defaults
 
-    # Where mutated genes are written: "global" (~/.oh-my-darwin/genome)
-    # or "project" (<project>/.darwin/genome)
+    # Where mutated genes are written: "global" (~/.oh-my-somnia/genome)
+    # or "project" (<project>/.somnia/genome)
     scope: str = "global"
 
     @property
@@ -140,7 +167,8 @@ def _apply(cfg: Config, data: dict, source: str = "config") -> None:
 
 def load_config(project_root: Path, overrides: dict | None = None) -> Config:
     cfg = Config()
-    for path in (darwin_home() / "config.toml", project_root / ".darwin" / "config.toml"):
+    for path in (somnia_home() / "config.toml",
+                 project_dir(project_root) / "config.toml"):
         if path.is_file():
             with open(path, "rb") as f:
                 _apply(cfg, tomllib.load(f), source=str(path))
@@ -155,7 +183,7 @@ def load_config(project_root: Path, overrides: dict | None = None) -> Config:
 
 
 CONFIG_TEMPLATE = """\
-# oh-my-darwin project config (.darwin/config.toml)
+# oh-my-somnia project config (.somnia/config.toml)
 
 # Shell command that decides pass/fail via exit code. Runs with cwd at the
 # (sandboxed) project root. Leave empty to use the AI judge alone.
@@ -181,7 +209,7 @@ max_turns = 60
 sandbox = "auto"
 
 # Where learned heuristics are stored: "global" shares across all projects,
-# "project" keeps them in .darwin/genome/.
+# "project" keeps them in .somnia/genome/.
 scope = "global"
 
 # Extra directory names to exclude from sandbox copies.

@@ -1,10 +1,12 @@
-"""oh-my-darwin CLI.
+"""oh-my-somnia CLI.
 
-    darwin init                     # write .darwin/config.toml template
-    darwin run "task"               # run the evolutionary loop on a task
-    darwin status                   # recent runs + genome summary
-    darwin genome list|show|promote|rm
-    darwin evolve                   # offline evolution from run history
+    somnia init                     # write .somnia/config.toml template
+    somnia run "task"               # run the evolutionary loop on a task
+    somnia status                   # recent runs + genome summary
+    somnia genome list|show|promote|rm
+    somnia evolve                   # offline evolution from run history
+
+(`darwin` still works as a legacy alias for the same entry point.)
 """
 
 from __future__ import annotations
@@ -17,7 +19,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from . import __version__, history
-from .config import CONFIG_TEMPLATE, Config, ConfigError, load_config, sandbox_root
+from .config import (CONFIG_TEMPLATE, Config, ConfigError, load_config,
+                     project_dir, sandbox_root)
 from .diagnoser import diagnose
 from .evaluator import Fitness, evaluate
 from .evolve import evolve as evolve_genome
@@ -65,7 +68,7 @@ class RunReport:
 
 
 # --------------------------------------------------------------------------
-# darwin run
+# somnia run
 # --------------------------------------------------------------------------
 
 async def _run_generation(task: str, gen: int, *, project: Path, cfg: Config,
@@ -144,7 +147,7 @@ async def cmd_run(args: argparse.Namespace) -> int:
     task: str = args.task
     run_id = _dt.datetime.now().strftime("%Y%m%d-%H%M%S")
 
-    _say(f"oh-my-darwin v{__version__}")
+    _say(f"oh-my-somnia v{__version__}")
     _say(f"task      : {task}")
     _say(f"project   : {project}")
     _say(f"fitness   : {cfg.fitness_command or '(AI judge only)'}")
@@ -317,9 +320,9 @@ async def cmd_run(args: argparse.Namespace) -> int:
 
 def cmd_init(_args: argparse.Namespace) -> int:
     ensure_seed_genome()
-    darwin_dir = Path.cwd() / ".darwin"
-    darwin_dir.mkdir(exist_ok=True)
-    config_path = darwin_dir / "config.toml"
+    state_dir = project_dir(Path.cwd())
+    state_dir.mkdir(exist_ok=True)
+    config_path = state_dir / "config.toml"
     if config_path.exists():
         _say(f"already exists: {config_path}")
     else:
@@ -339,7 +342,7 @@ def cmd_status(_args: argparse.Namespace) -> int:
     wins = sum(1 for e in proj_runs if e.get("passed"))
     all_wins = sum(1 for e in all_runs if e.get("passed"))
 
-    _say(f"oh-my-darwin v{__version__}")
+    _say(f"oh-my-somnia v{__version__}")
     if proj_runs:
         _say(f"runs      : {len(proj_runs)} in this project, {wins} passed "
              f"({wins / len(proj_runs) * 100:.0f}%) | all projects: "
@@ -426,12 +429,12 @@ async def cmd_evolve(_args: argparse.Namespace) -> int:
 
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
-        prog="darwin",
-        description="oh-my-darwin: a self-improving agent harness. "
+        prog="somnia",
+        description="oh-my-somnia: a self-improving agent harness. "
                     "Plan -> execute -> diagnose -> mutate -> trial -> "
                     "keep only what works better.",
     )
-    p.add_argument("--version", action="version", version=f"oh-my-darwin {__version__}")
+    p.add_argument("--version", action="version", version=f"oh-my-somnia {__version__}")
     sub = p.add_subparsers(dest="command", required=True)
 
     run = sub.add_parser("run", help="run the evolutionary loop on a task")
@@ -449,7 +452,7 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--merge-best", action="store_true",
                      help="merge the best attempt even if it failed")
 
-    sub.add_parser("init", help="write .darwin/config.toml template")
+    sub.add_parser("init", help="write .somnia/config.toml template")
     sub.add_parser("status", help="recent runs and genome summary")
     sub.add_parser("evolve", help="propose candidate genes from run history")
 

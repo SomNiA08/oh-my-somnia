@@ -76,7 +76,7 @@ async def judge(task: str, plan: Plan, *, cwd: Path, cfg: Config,
             f"```\n{command_result[1][-1500:]}\n```\n"
         )
     prompt = (
-        "You are the JUDGE phase of oh-my-darwin. Inspect this workspace "
+        "You are the JUDGE phase of oh-my-somnia. Inspect this workspace "
         "read-only and score how well the task was accomplished.\n\n"
         f"Task:\n{task}\n\n"
         "Success criteria:\n"

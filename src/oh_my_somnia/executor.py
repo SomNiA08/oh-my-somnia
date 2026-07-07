@@ -11,7 +11,7 @@ from .planner import Plan
 
 def _system(genome_section: str) -> str:
     return (
-        "You are the EXECUTOR phase of oh-my-darwin, a self-improving agent "
+        "You are the EXECUTOR phase of oh-my-somnia, a self-improving agent "
         "harness. Carry out the given plan in this workspace. Work "
         "autonomously — nobody can answer questions mid-task. Verify your own "
         "work before finishing: run the verification command or exercise the "

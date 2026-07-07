@@ -41,7 +41,7 @@ class Plan:
 
 def _system(genome_section: str) -> str:
     return (
-        "You are the PLANNER phase of oh-my-darwin, a self-improving agent "
+        "You are the PLANNER phase of oh-my-somnia, a self-improving agent "
         "harness. Explore the project read-only, then produce a concrete, "
         "verifiable execution plan for the given task. Keep steps actionable "
         "and success criteria objectively checkable.\n\n" + genome_section

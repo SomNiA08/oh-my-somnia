@@ -3,7 +3,7 @@ requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "oh-my-darwin"
+name = "oh-my-somnia"
 version = "0.1.0"
 description = "A self-improving agent harness: plan, execute, diagnose failures, mutate its own strategies, trial them in a sandbox, and keep only what works better."
 readme = "README.md"
@@ -14,10 +14,11 @@ dependencies = [
 ]
 
 [project.scripts]
-darwin = "oh_my_darwin.cli:main"
+somnia = "oh_my_somnia.cli:main"
+darwin = "oh_my_somnia.cli:main"  # legacy alias
 
 [tool.setuptools.packages.find]
 where = ["src"]
 
 [tool.setuptools.package-data]
-oh_my_darwin = ["seed/*.md"]
+oh_my_somnia = ["seed/*.md"]

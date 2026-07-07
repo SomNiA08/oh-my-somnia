@@ -14,8 +14,8 @@ A gene looks like:
     Before declaring a task complete, run the project's tests/build...
 
 Active genes are injected into every phase's system prompt. Candidate genes
-(from `darwin evolve`) are injected too, marked provisional; they get promoted
-after proving themselves in passing runs, or via `darwin genome promote`.
+(from `somnia evolve`) are injected too, marked provisional; they get promoted
+after proving themselves in passing runs, or via `somnia genome promote`.
 """
 
 from __future__ import annotations
@@ -102,8 +102,9 @@ class Genome:
     @classmethod
     def load(cls, project_root: Path, scope: str = "global") -> "Genome":
         global_dir = cfg_mod.genome_dir()
-        project_dir = project_root / ".darwin" / "genome"
-        dirs = [project_dir, global_dir] if scope == "project" else [global_dir, project_dir]
+        project_genome = cfg_mod.project_dir(project_root) / "genome"
+        dirs = ([project_genome, global_dir] if scope == "project"
+                else [global_dir, project_genome])
         return cls(dirs)
 
     def reload(self) -> None:

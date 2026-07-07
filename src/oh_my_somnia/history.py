@@ -1,4 +1,4 @@
-"""Run history: one JSON line per run in ~/.oh-my-darwin/history.jsonl."""
+"""Run history: one JSON line per run in ~/.oh-my-somnia/history.jsonl."""
 
 from __future__ import annotations
 
