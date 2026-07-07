@@ -4,7 +4,9 @@ Two backends share the same change-tracking and merge-back logic:
 
 - "copy":     shutil.copytree of the project (works anywhere).
 - "worktree": `git worktree add` of HEAD plus an overlay of the project's
-              uncommitted changes — much faster on large repositories.
+              uncommitted changes — much faster on large repositories. Works
+              from a monorepo subdirectory too: the whole repo is checked out
+              but the agent works in, and only merges back, that subdirectory.
 
 A sandbox snapshots its tree (content hashes), lets an agent mutate it
 freely, and can report/merge exactly what changed. Only the winning
@@ -21,6 +23,14 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 MAX_HASH_BYTES = 50 * 1024 * 1024  # skip hashing files bigger than this
+
+# When running from a monorepo subdirectory, a worktree checks out the WHOLE
+# repo working tree. If far more tracked files live outside the subdirectory
+# than in it, checking them all out is both wasteful and surprising (the
+# classic footgun: a project that merely sits under a git-managed home dir).
+# Past this many files-outside-the-subdir, "auto" prefers a copy of just the
+# subdirectory; explicit "worktree" still proceeds but warns.
+SUBDIR_WORKTREE_FILE_LIMIT = 4000
 
 
 def _hash_file(path: Path) -> str:
@@ -58,26 +68,50 @@ def _git(repo: Path, *args: str) -> tuple[int, str]:
     return proc.returncode, (proc.stdout or "") + (proc.stderr or "")
 
 
-def worktree_eligible(project_root: Path) -> tuple[bool, str]:
-    """A worktree sandbox is only valid when the project root IS the repo
-    toplevel. A mere subdirectory of some enclosing repo (e.g. a project under
-    a git-managed home directory) would check out the whole enclosing repo —
-    wrong tree, wrong merge paths."""
+def worktree_eligible(project_root: Path) -> tuple[bool, str, str]:
+    """Decide whether a worktree sandbox can be built for ``project_root``.
+
+    Returns ``(eligible, reason, subpath)``. ``subpath`` is the POSIX relative
+    path from the repository toplevel to ``project_root`` — ``""`` when the
+    project IS the toplevel, or e.g. ``"packages/frontend"`` for a monorepo
+    subdirectory. The worktree always checks out the whole repo; ``subpath``
+    tells the sandbox which directory inside it the agent actually works in."""
     code, out = _git(project_root, "rev-parse", "--show-toplevel")
     if code != 0:
-        return False, "not a git repository"
+        return False, "not a git repository", ""
     toplevel = out.strip()
     try:
         # samefile handles Windows 8.3 short paths, case, and slash direction
         same = os.path.samefile(toplevel, project_root)
     except OSError:
         same = Path(toplevel).resolve() == Path(project_root).resolve()
-    if not same:
-        return False, f"project is a subdirectory of the repo at {toplevel}"
+    if same:
+        subpath = ""
+    else:
+        try:
+            rel = Path(project_root).resolve().relative_to(Path(toplevel).resolve())
+        except ValueError:
+            return False, f"project is outside the repo at {toplevel}", ""
+        subpath = rel.as_posix()
     code, _ = _git(project_root, "rev-parse", "--verify", "HEAD")
     if code != 0:
-        return False, "repository has no commits yet"
-    return True, ""
+        return False, "repository has no commits yet", ""
+    return True, "", subpath
+
+
+def _tracked_counts(project_root: Path) -> tuple[int, int]:
+    """Return ``(files tracked in the whole repo, files tracked under
+    project_root)``. Reads the index via `git ls-files` — no checkout — so it
+    is cheap even on large repos. On any git error the counts are 0, which
+    disables the size guard (fail open toward the requested backend)."""
+    code_top, top = _git(project_root, "rev-parse", "--show-toplevel")
+    if code_top != 0:
+        return 0, 0
+    code_t, out_t = _git(Path(top.strip()), "ls-files", "-z")
+    code_s, out_s = _git(project_root, "ls-files", "-z")
+    n_total = out_t.count("\0") if code_t == 0 else 0
+    n_sub = out_s.count("\0") if code_s == 0 else 0
+    return n_total, n_sub
 
 
 def _dirty_entries(project_root: Path) -> list[tuple[str, str, str | None]]:
@@ -112,11 +146,22 @@ class Change:
 
 @dataclass
 class Sandbox:
-    project_root: Path
-    path: Path
+    project_root: Path      # merge-back target (the dir somnia was run in)
+    path: Path              # agent work dir == checkout_root / subpath
     ignores: set[str]
-    kind: str = "copy"  # "copy" | "worktree"
+    kind: str = "copy"      # "copy" | "worktree"
     snapshot: dict[str, str] = field(default_factory=dict)
+    # For a monorepo-subdir worktree these differ from the trivial case; for
+    # copy sandboxes and repo-root worktrees they collapse (subpath == "").
+    checkout_root: Path | None = None  # git worktree dir (whole repo)
+    repo_toplevel: Path | None = None  # real repo root; None for copy
+    subpath: str = ""                  # POSIX rel path, repo root -> project
+    overlay_baseline: set[str] = field(default_factory=set)
+    notice: str = ""                   # user-facing heads-up from creation
+
+    def __post_init__(self) -> None:
+        if self.checkout_root is None:
+            self.checkout_root = self.path
 
     # -- creation ----------------------------------------------------------
 
@@ -127,10 +172,29 @@ class Sandbox:
         if mode not in ("auto", "copy", "worktree"):
             raise ValueError(f"unknown sandbox mode: {mode}")
         if mode != "copy":
-            eligible, reason = worktree_eligible(project_root)
+            eligible, reason, subpath = worktree_eligible(project_root)
             if eligible:
+                notice = ""
+                if subpath:  # monorepo subdir: guard against a huge checkout
+                    n_total, n_sub = _tracked_counts(project_root)
+                    if n_total - n_sub > SUBDIR_WORKTREE_FILE_LIMIT:
+                        if mode == "auto":
+                            sb = cls._create_copy(project_root, base, name,
+                                                  ignores)
+                            sb.notice = (
+                                f"'{subpath}' is a small part of a "
+                                f"{n_total}-file repo — sandboxing just this "
+                                f"directory with a copy instead of a whole-repo "
+                                f"worktree (use --sandbox worktree to force).")
+                            return sb
+                        notice = (
+                            f"worktree checks out the whole {n_total}-file "
+                            f"repo, not just '{subpath}' ({n_sub} files) — use "
+                            f"--sandbox copy to sandbox only this directory.")
                 try:
-                    return cls._create_worktree(project_root, base, name, ignores)
+                    sb = cls._create_worktree(project_root, base, name, ignores)
+                    sb.notice = notice
+                    return sb
                 except RuntimeError:
                     if mode == "worktree":
                         raise
@@ -159,42 +223,75 @@ class Sandbox:
     @classmethod
     def _create_worktree(cls, project_root: Path, base: Path, name: str,
                          ignores: set[str]) -> "Sandbox":
-        eligible, reason = worktree_eligible(project_root)
+        eligible, reason, subpath = worktree_eligible(project_root)
         if not eligible:
             raise RuntimeError(f"worktree sandbox unavailable: {reason}")
-        target = base / name
-        if target.exists():
-            cls._remove_worktree(project_root, target)
-        target.parent.mkdir(parents=True, exist_ok=True)
+        _, top_out = _git(project_root, "rev-parse", "--show-toplevel")
+        repo_toplevel = Path(top_out.strip())
+        checkout_root = base / name
+        if checkout_root.exists():
+            cls._remove_worktree(project_root, checkout_root)
+        checkout_root.parent.mkdir(parents=True, exist_ok=True)
         code, out = _git(project_root, "worktree", "add", "--detach",
-                         str(target), "HEAD")
+                         str(checkout_root), "HEAD")
         if code != 0:
             raise RuntimeError(f"git worktree add failed: {out.strip()[:400]}")
 
-        sb = cls(project_root=project_root, path=target, ignores=ignores,
-                 kind="worktree")
+        work = checkout_root / subpath if subpath else checkout_root
+        sb = cls(project_root=project_root, path=work, ignores=ignores,
+                 kind="worktree", checkout_root=checkout_root,
+                 repo_toplevel=repo_toplevel, subpath=subpath)
         sb._overlay_uncommitted()
+        sb.overlay_baseline = sb._porcelain_set()
         sb._take_snapshot()
         return sb
 
     def _overlay_uncommitted(self) -> None:
-        """Mirror the project's uncommitted state into the worktree, so the
-        agent sees the real current tree, not just HEAD."""
+        """Mirror the whole repo's uncommitted state into the worktree
+        checkout, so the agent sees the real current tree (HEAD + working
+        changes), not just HEAD. Paths from `git status` are relative to the
+        repo toplevel, so we overlay from `repo_toplevel` onto `checkout_root`;
+        snapshot/merge remain scoped to the subdir via `self.path`."""
+        source = self.repo_toplevel or self.project_root
+        dest = self.checkout_root or self.path
+
         def blocked(rel: str) -> bool:
             return any(part in self.ignores for part in Path(rel).parts)
 
-        for status, rel, orig in _dirty_entries(self.project_root):
+        for status, rel, orig in _dirty_entries(source):
             if orig and not blocked(orig):  # rename: drop the old path
-                (self.path / orig).unlink(missing_ok=True)
+                (dest / orig).unlink(missing_ok=True)
             if blocked(rel):
                 continue
-            src = self.project_root / rel
-            dst = self.path / rel
+            src = source / rel
+            dst = dest / rel
             if "D" in status or not src.exists():
                 dst.unlink(missing_ok=True)
             elif src.is_file():
                 dst.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copy2(src, dst)
+
+    def _porcelain_set(self) -> set[str]:
+        """Repo-relative paths currently reported dirty in the checkout."""
+        base = self.checkout_root or self.path
+        return {rel for _status, rel, _orig in _dirty_entries(base)}
+
+    def out_of_subdir_changes(self) -> list[str]:
+        """Repo-relative files the agent changed OUTSIDE `subpath` that merge
+        will not carry back. Best-effort (diffs against the post-overlay
+        baseline); empty for copy sandboxes and repo-root worktrees."""
+        if self.kind != "worktree" or not self.subpath:
+            return []
+        prefix = self.subpath + "/"
+        fresh = self._porcelain_set() - self.overlay_baseline
+        out = []
+        for rel in sorted(fresh):
+            if rel.startswith(prefix):
+                continue  # inside the subdir — merged normally
+            if any(part in self.ignores for part in Path(rel).parts):
+                continue
+            out.append(rel)
+        return out
 
     def _take_snapshot(self) -> None:
         self.snapshot = {
@@ -254,7 +351,7 @@ class Sandbox:
 
     def destroy(self) -> None:
         if self.kind == "worktree":
-            self._remove_worktree(self.project_root, self.path)
+            self._remove_worktree(self.project_root, self.checkout_root)
         else:
             shutil.rmtree(self.path, ignore_errors=True)
 

@@ -92,6 +92,8 @@ async def _run_generation(task: str, gen: int, *, project: Path, cfg: Config,
         sandbox = Sandbox.create(project, sandbox_root() / run_id, f"gen-{gen}",
                                  cfg.ignores, mode=cfg.sandbox)
         _say(f"  [gen {gen}] sandbox ready ({sandbox.kind}): {sandbox.path}")
+        if sandbox.notice:
+            _say(f"  [gen {gen}] note: {sandbox.notice}")
         workdir = sandbox.path
 
     try:
@@ -238,6 +240,9 @@ async def cmd_run(args: argparse.Namespace) -> int:
                 _say(f"  ... and {len(merged) - 30} more")
             for rel in skipped:
                 _say(f"  ! skipped {rel} (changed in project since snapshot)")
+            for rel in best.sandbox.out_of_subdir_changes():
+                _say(f"  ! ignored {rel} (outside {best.sandbox.subpath} — "
+                     f"not merged back)")
         except (Exception, KeyboardInterrupt) as exc:
             merge_failed = True
             run_error = f"merge failed midway: {exc}"
