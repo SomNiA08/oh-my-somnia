@@ -28,6 +28,10 @@ def sandbox_root() -> Path:
     return darwin_home() / "sandboxes"
 
 
+# NOTE: matching is by bare directory/file NAME at any depth. Deliberately
+# excludes overly generic names like "env" (a common source-dir name);
+# ".venv"/"venv" cover Python virtualenvs. Use `unignore` in config.toml to
+# drop any of these defaults for a project where the name is real source.
 DEFAULT_IGNORES = [
     ".git",
     ".hg",
@@ -36,7 +40,6 @@ DEFAULT_IGNORES = [
     "node_modules",
     ".venv",
     "venv",
-    "env",
     "__pycache__",
     ".pytest_cache",
     ".mypy_cache",
@@ -79,6 +82,7 @@ class Config:
     in_place: bool = False     # run in the real project instead of a sandbox
     keep_sandboxes: bool = False
     extra_ignores: list[str] = field(default_factory=list)
+    unignore: list[str] = field(default_factory=list)  # names to drop from defaults
 
     # Where mutated genes are written: "global" (~/.oh-my-darwin/genome)
     # or "project" (<project>/.darwin/genome)
@@ -86,15 +90,52 @@ class Config:
 
     @property
     def ignores(self) -> set[str]:
-        return set(DEFAULT_IGNORES) | set(self.extra_ignores)
+        return (set(DEFAULT_IGNORES) - set(self.unignore)) | set(self.extra_ignores)
 
 
-def _apply(cfg: Config, data: dict) -> None:
+class ConfigError(Exception):
+    """Raised for invalid config values — fail loudly at load time instead of
+    silently misbehaving deep inside a run."""
+
+
+_CHOICE_FIELDS = {
+    "permission_mode": {"default", "acceptEdits", "plan", "dontAsk",
+                        "bypassPermissions"},
+    "scope": {"global", "project"},
+    "sandbox": {"auto", "copy", "worktree"},
+}
+
+
+def _apply(cfg: Config, data: dict, source: str = "config") -> None:
     valid = {f.name for f in fields(Config)}
     for key, value in data.items():
         k = key.replace("-", "_")
-        if k in valid and value is not None:
-            setattr(cfg, k, value)
+        if k not in valid or value is None:
+            continue
+        current = getattr(cfg, k)
+        if isinstance(current, bool):
+            if not isinstance(value, bool):
+                raise ConfigError(f"{source}: '{key}' expects true/false, "
+                                  f"got {value!r}")
+        elif isinstance(current, int):
+            if not isinstance(value, int) or isinstance(value, bool):
+                raise ConfigError(f"{source}: '{key}' expects an integer, "
+                                  f"got {value!r}")
+        elif isinstance(current, float):
+            if not isinstance(value, (int, float)) or isinstance(value, bool):
+                raise ConfigError(f"{source}: '{key}' expects a number, "
+                                  f"got {value!r}")
+            value = float(value)
+        elif isinstance(current, list):
+            if not isinstance(value, list) or not all(
+                    isinstance(x, str) for x in value):
+                raise ConfigError(f"{source}: '{key}' expects a list of "
+                                  f"strings like [\"a\", \"b\"], got {value!r}")
+        else:  # str
+            if not isinstance(value, str):
+                raise ConfigError(f"{source}: '{key}' expects a string, "
+                                  f"got {value!r}")
+        setattr(cfg, k, value)
 
 
 def load_config(project_root: Path, overrides: dict | None = None) -> Config:
@@ -102,9 +143,14 @@ def load_config(project_root: Path, overrides: dict | None = None) -> Config:
     for path in (darwin_home() / "config.toml", project_root / ".darwin" / "config.toml"):
         if path.is_file():
             with open(path, "rb") as f:
-                _apply(cfg, tomllib.load(f))
+                _apply(cfg, tomllib.load(f), source=str(path))
     if overrides:
-        _apply(cfg, {k: v for k, v in overrides.items() if v is not None})
+        _apply(cfg, {k: v for k, v in overrides.items() if v is not None},
+               source="command line")
+    for key, allowed in _CHOICE_FIELDS.items():
+        if getattr(cfg, key) not in allowed:
+            raise ConfigError(f"'{key}' must be one of {sorted(allowed)}, "
+                              f"got {getattr(cfg, key)!r}")
     return cfg
 
 
@@ -140,4 +186,7 @@ scope = "global"
 
 # Extra directory names to exclude from sandbox copies.
 # extra_ignores = ["data", "models"]
+
+# Default-ignored names to re-include (e.g. a real source dir named "build").
+# unignore = ["build"]
 """

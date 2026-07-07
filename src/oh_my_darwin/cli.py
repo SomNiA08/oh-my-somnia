@@ -17,7 +17,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from . import __version__, history
-from .config import CONFIG_TEMPLATE, Config, load_config, sandbox_root
+from .config import CONFIG_TEMPLATE, Config, ConfigError, load_config, sandbox_root
 from .diagnoser import diagnose
 from .evaluator import Fitness, evaluate
 from .evolve import evolve as evolve_genome
@@ -75,6 +75,15 @@ async def _run_generation(task: str, gen: int, *, project: Path, cfg: Config,
 
     if cfg.in_place:
         workdir, sandbox = project, None
+        if gen > 0:
+            # In-place generations are cumulative — tell the agents so they
+            # don't treat the previous attempt's leftovers as pristine code.
+            task = (
+                f"{task}\n\nNOTE: {gen} previous in-place attempt(s) at this "
+                "task already modified this workspace and FAILED the fitness "
+                "check. Their leftover changes are still present — review "
+                "them and fix or undo them as part of your work."
+            )
     else:
         _say(f"  [gen {gen}] creating sandbox...")
         sandbox = Sandbox.create(project, sandbox_root() / run_id, f"gen-{gen}",
@@ -82,25 +91,35 @@ async def _run_generation(task: str, gen: int, *, project: Path, cfg: Config,
         _say(f"  [gen {gen}] sandbox ready ({sandbox.kind}): {sandbox.path}")
         workdir = sandbox.path
 
-    _say(f"  [gen {gen}] planning...")
-    plan, plan_run = await make_plan(
-        task, cwd=workdir, genome_section=genome_section, cfg=cfg,
-        fitness_command=cfg.fitness_command,
-    )
-    _say(f"  [gen {gen}] plan: {plan.summary}")
+    try:
+        _say(f"  [gen {gen}] planning...")
+        plan, plan_run = await make_plan(
+            task, cwd=workdir, genome_section=genome_section, cfg=cfg,
+            fitness_command=cfg.fitness_command,
+        )
+        if plan_run.is_error:
+            _say(f"  [gen {gen}] planner ended with {plan_run.subtype} — "
+                 f"falling back to a minimal plan")
+        _say(f"  [gen {gen}] plan: {plan.summary}")
 
-    _say(f"  [gen {gen}] executing ({len(plan.steps)} steps)...")
-    exec_run = await execute(
-        task, plan, cwd=workdir, genome_section=genome_section, cfg=cfg,
-        fitness_command=cfg.fitness_command,
-    )
-    if exec_run.is_error:
-        _say(f"  [gen {gen}] executor ended with {exec_run.subtype}"
-             + (f": {'; '.join(exec_run.errors)[:200]}" if exec_run.errors else ""))
+        _say(f"  [gen {gen}] executing ({len(plan.steps)} steps)...")
+        exec_run = await execute(
+            task, plan, cwd=workdir, genome_section=genome_section, cfg=cfg,
+            fitness_command=cfg.fitness_command,
+        )
+        if exec_run.is_error:
+            _say(f"  [gen {gen}] executor ended with {exec_run.subtype}"
+                 + (f": {'; '.join(exec_run.errors)[:200]}" if exec_run.errors else ""))
 
-    _say(f"  [gen {gen}] evaluating...")
-    fitness = await evaluate(task, plan, cwd=workdir, cfg=cfg)
-    _say(f"  [gen {gen}] fitness: {fitness.render()}")
+        _say(f"  [gen {gen}] evaluating...")
+        fitness = await evaluate(task, plan, cwd=workdir, cfg=cfg)
+        _say(f"  [gen {gen}] fitness: {fitness.render()}")
+    except BaseException:
+        # Never leak a sandbox (or a dangling git worktree registration)
+        # when a generation dies mid-flight.
+        if sandbox is not None:
+            sandbox.destroy()
+        raise
 
     return Attempt(
         generation=gen, plan=plan, fitness=fitness, sandbox=sandbox,
@@ -131,107 +150,142 @@ async def cmd_run(args: argparse.Namespace) -> int:
     _say(f"fitness   : {cfg.fitness_command or '(AI judge only)'}")
     _say(f"genome    : {len(genome.genes)} genes | generations: {cfg.generations} "
          f"| mode: {'in-place' if cfg.in_place else f'sandboxed ({cfg.sandbox})'}")
+    if cfg.in_place and cfg.generations > 1:
+        _say("! in-place mode: generations run CUMULATIVELY in your real "
+             "project with no reset between failed attempts.")
+    if cfg.in_place and cfg.permission_mode == "bypassPermissions":
+        _say("! UNSAFE COMBINATION: bypassPermissions + --in-place gives the "
+             "agent unrestricted access to your real project. The config "
+             "template intends bypassPermissions for sandboxed runs only.")
     _say("")
 
     report = RunReport()
     pending_patch: GenePatch | None = None
+    run_error: str | None = None
+    interrupted = False
 
-    for gen in range(cfg.generations):
-        _say(f"── generation {gen} " + ("─" * 40))
-        attempt = await _run_generation(
-            task, gen, project=project, cfg=cfg, genome=genome,
-            patch=pending_patch, run_id=run_id,
-        )
+    try:
+        for gen in range(cfg.generations):
+            _say(f"── generation {gen} " + ("─" * 40))
+            attempt = await _run_generation(
+                task, gen, project=project, cfg=cfg, genome=genome,
+                patch=pending_patch, run_id=run_id,
+            )
 
-        # SELECT: did this generation's mutation earn its place in the genome?
-        if pending_patch is not None and report.attempts:
-            if better(attempt.fitness, report.attempts[-1].fitness):
-                genome.write(pending_patch.gene)
-                report.promoted.append(pending_patch.gene.id)
-                _say(f"  [select] gene '{pending_patch.gene.id}' improved fitness "
-                     f"-> kept in genome")
+            # SELECT: did this generation's mutation earn its place?
+            if pending_patch is not None and report.attempts:
+                if better(attempt.fitness, report.attempts[-1].fitness):
+                    genome.write(pending_patch.gene)
+                    report.promoted.append(pending_patch.gene.id)
+                    _say(f"  [select] gene '{pending_patch.gene.id}' improved "
+                         f"fitness -> kept in genome")
+                else:
+                    report.discarded.append(pending_patch.gene.id)
+                    _say(f"  [select] gene '{pending_patch.gene.id}' did not "
+                         f"improve fitness -> discarded")
+            pending_patch = None
+            report.attempts.append(attempt)
+
+            if attempt.fitness.passed:
+                _say(f"  [gen {gen}] PASSED")
+                break
+
+            if gen == cfg.generations - 1:
+                _say(f"  [gen {gen}] failed — no generations left")
+                break
+
+            _say(f"  [gen {gen}] failed — diagnosing...")
+            diagnosis = await diagnose(
+                task, attempt.plan, attempt.fitness, attempt.transcript_tail,
+                cwd=attempt.sandbox.path if attempt.sandbox else project,
+                cfg=cfg,
+            )
+            report.diagnoses.append(f"[{diagnosis.category}] {diagnosis.root_cause}")
+            _say(f"  [diagnose] ({diagnosis.category}) {diagnosis.root_cause[:160]}")
+
+            pending_patch = await mutate(task, diagnosis, genome, cfg=cfg)
+            if pending_patch:
+                _say(f"  [mutate] trial gene '{pending_patch.gene.id}': "
+                     f"{pending_patch.gene.title}")
             else:
-                report.discarded.append(pending_patch.gene.id)
-                _say(f"  [select] gene '{pending_patch.gene.id}' did not improve "
-                     f"fitness -> discarded")
-        pending_patch = None
-        report.attempts.append(attempt)
+                _say("  [mutate] no viable mutation proposed — retrying with "
+                     "current genome")
+    except KeyboardInterrupt:
+        interrupted = True
+        run_error = "interrupted"
+        _say("\ninterrupted — cleaning up...")
+    except Exception as exc:
+        run_error = f"{type(exc).__name__}: {exc}"
+        _say(f"\nrun aborted by error: {run_error}")
 
-        if attempt.fitness.passed:
-            _say(f"  [gen {gen}] PASSED")
-            break
-
-        if gen == cfg.generations - 1:
-            _say(f"  [gen {gen}] failed — no generations left")
-            break
-
-        _say(f"  [gen {gen}] failed — diagnosing...")
-        diagnosis = await diagnose(
-            task, attempt.plan, attempt.fitness, attempt.transcript_tail,
-            cwd=attempt.sandbox.path if attempt.sandbox else project, cfg=cfg,
-        )
-        report.diagnoses.append(f"[{diagnosis.category}] {diagnosis.root_cause}")
-        _say(f"  [diagnose] ({diagnosis.category}) {diagnosis.root_cause[:160]}")
-
-        pending_patch = await mutate(task, diagnosis, genome, cfg=cfg)
-        if pending_patch:
-            _say(f"  [mutate] trial gene '{pending_patch.gene.id}': "
-                 f"{pending_patch.gene.title}")
-        else:
-            _say("  [mutate] no viable mutation proposed — retrying with "
-                 "current genome")
-
-    # Merge the winner back into the real project.
+    # Merge the winner back into the real project (skipped on Ctrl+C).
     best = report.best
-    merged: list[str] = []
-    skipped: list[str] = []
-    if best and best.sandbox and (best.fitness.passed or args.merge_best):
-        applied, skipped = best.sandbox.merge_into_project()
-        merged = [f"{c.kind[0]} {c.relpath}" for c in applied]
-        _say("")
-        _say(f"merged generation {best.generation} into project "
-             f"({len(applied)} files):")
-        for line in merged[:30]:
-            _say(f"  {line}")
-        if len(merged) > 30:
-            _say(f"  ... and {len(merged) - 30} more")
-        for rel in skipped:
-            _say(f"  ! skipped {rel} (changed in project since snapshot)")
-    elif best and best.sandbox and not best.fitness.passed:
+    merge_failed = False
+    if best and best.sandbox and not interrupted and (
+            best.fitness.passed or args.merge_best):
+        try:
+            applied, skipped = best.sandbox.merge_into_project()
+            merged = [f"{c.kind[0]} {c.relpath}" for c in applied]
+            _say("")
+            _say(f"merged generation {best.generation} into project "
+                 f"({len(applied)} files):")
+            for line in merged[:30]:
+                _say(f"  {line}")
+            if len(merged) > 30:
+                _say(f"  ... and {len(merged) - 30} more")
+            for rel in skipped:
+                _say(f"  ! skipped {rel} (changed in project since snapshot)")
+        except (Exception, KeyboardInterrupt) as exc:
+            merge_failed = True
+            run_error = f"merge failed midway: {exc}"
+            _say("")
+            _say(f"! MERGE FAILED MIDWAY — the project may be partially "
+                 f"updated: {exc}")
+            _say(f"  sandbox preserved for manual recovery: {best.sandbox.path}")
+    elif best and best.sandbox and not best.fitness.passed and not interrupted:
         _say("")
         _say("no generation passed — nothing merged. Best attempt kept at:")
         _say(f"  {best.sandbox.path}")
         _say("  (use --merge-best to merge the best attempt anyway)")
 
-    # Candidate genes prove themselves through passing runs.
-    auto_promoted = genome.record_trial(passed=bool(best and best.fitness.passed))
-    for gid in auto_promoted:
-        _say(f"[genome] candidate '{gid}' proved itself -> promoted to active")
+    # Candidate genes prove themselves through completed runs only.
+    if run_error is None:
+        auto_promoted = genome.record_trial(
+            passed=bool(best and best.fitness.passed))
+        for gid in auto_promoted:
+            _say(f"[genome] candidate '{gid}' proved itself -> promoted to active")
 
-    # Persist history.
-    history.record({
-        "type": "run",
-        "project": str(project),
-        "task": task,
-        "passed": bool(best and best.fitness.passed),
-        "best_generation": best.generation if best else None,
-        "best_score": round(best.fitness.score, 3) if best else 0,
-        "generations": len(report.attempts),
-        "diagnoses": report.diagnoses,
-        "patches_promoted": report.promoted,
-        "patches_discarded": report.discarded,
-        "cost_usd": round(report.total_cost, 4),
-    })
+    # Persist history even for aborted runs — they cost money too.
+    try:
+        history.record({
+            "type": "run",
+            "project": str(project),
+            "task": task,
+            "passed": bool(best and best.fitness.passed and not merge_failed),
+            "error": run_error,
+            "best_generation": best.generation if best else None,
+            "best_score": round(best.fitness.score, 3) if best else 0,
+            "generations": len(report.attempts),
+            "diagnoses": report.diagnoses,
+            "patches_promoted": report.promoted,
+            "patches_discarded": report.discarded,
+            "cost_usd": round(report.total_cost, 4),
+        })
+    except OSError as exc:
+        _say(f"! could not write history: {exc}")
 
-    # Cleanup sandboxes (keep the best failing one for inspection).
+    # Cleanup sandboxes. Keep the interesting one: the best failing attempt
+    # (for inspection) or the merge-failed one (for recovery).
     if not cfg.keep_sandboxes:
         for a in report.attempts:
             if a.sandbox is None:
                 continue
-            keep_for_inspection = (
-                best is a and not best.fitness.passed and not args.merge_best
+            keep = best is a and (
+                merge_failed
+                or (not best.fitness.passed and not args.merge_best
+                    and not interrupted)
             )
-            if not keep_for_inspection:
+            if not keep:
                 a.sandbox.destroy()
         try:  # drop the run folder once it's empty
             (sandbox_root() / run_id).rmdir()
@@ -239,14 +293,21 @@ async def cmd_run(args: argparse.Namespace) -> int:
             pass
 
     _say("")
-    passed = bool(best and best.fitness.passed)
-    _say(f"result    : {'PASS' if passed else 'FAIL'} "
-         f"(best score {best.fitness.score:.2f})" if best else "result    : no attempts")
+    passed = bool(best and best.fitness.passed and not merge_failed)
+    if best:
+        _say(f"result    : {'PASS' if passed else 'FAIL'} "
+             f"(best score {best.fitness.score:.2f})")
+    else:
+        _say("result    : no completed attempts")
+    if run_error:
+        _say(f"error     : {run_error}")
     if report.promoted:
         _say(f"evolved   : +{', +'.join(report.promoted)}")
     if report.discarded:
         _say(f"discarded : {', '.join(report.discarded)}")
     _say(f"cost      : ${report.total_cost:.4f}")
+    if interrupted:
+        return 130
     return 0 if passed else 1
 
 
@@ -271,32 +332,41 @@ def cmd_init(_args: argparse.Namespace) -> int:
 
 def cmd_status(_args: argparse.Namespace) -> int:
     ensure_seed_genome()
-    genome = Genome.load(Path.cwd())
-    entries = history.read(limit=10)
-    all_entries = history.read()
-    runs = [e for e in all_entries if e.get("type") == "run"]
-    wins = sum(1 for e in runs if e.get("passed"))
+    project = Path.cwd()
+    genome = Genome.load(project)
+    all_runs = [e for e in history.read() if e.get("type") == "run"]
+    proj_runs = [e for e in all_runs if e.get("project") == str(project)]
+    wins = sum(1 for e in proj_runs if e.get("passed"))
+    all_wins = sum(1 for e in all_runs if e.get("passed"))
 
     _say(f"oh-my-darwin v{__version__}")
-    _say(f"runs      : {len(runs)} total, {wins} passed "
-         f"({(wins / len(runs) * 100):.0f}% win rate)" if runs else "runs      : none yet")
+    if proj_runs:
+        _say(f"runs      : {len(proj_runs)} in this project, {wins} passed "
+             f"({wins / len(proj_runs) * 100:.0f}%) | all projects: "
+             f"{len(all_runs)} runs, {all_wins} passed")
+    elif all_runs:
+        _say(f"runs      : none in this project | all projects: "
+             f"{len(all_runs)} runs, {all_wins} passed")
+    else:
+        _say("runs      : none yet")
     _say(f"genome    : {len(genome.genes)} genes")
     for g in genome.summary():
         stats = f" uses={g.uses} wins={g.wins}" if g.status == "candidate" else ""
         _say(f"  [{g.status:9}] {g.id} — {g.title} ({g.origin}){stats}")
-    if entries:
+    recent = proj_runs[-10:] if proj_runs else all_runs[-10:]
+    if recent:
         _say("")
-        _say("recent runs:")
-        for e in entries:
-            if e.get("type") != "run":
-                continue
+        _say("recent runs" + ("" if proj_runs else " (other projects)") + ":")
+        for e in recent:
             mark = "PASS" if e.get("passed") else "FAIL"
+            err = " | aborted" if e.get("error") else ""
             evolved = ""
             if e.get("patches_promoted"):
                 evolved = f" | evolved: {', '.join(e['patches_promoted'])}"
             _say(f"  {e.get('timestamp', '?')} [{mark}] "
                  f"{str(e.get('task', ''))[:60]} "
-                 f"(gens={e.get('generations')}, ${e.get('cost_usd', 0)}){evolved}")
+                 f"(gens={e.get('generations')}, ${e.get('cost_usd', 0)})"
+                 f"{err}{evolved}")
     return 0
 
 
@@ -405,6 +475,9 @@ def main(argv: list[str] | None = None) -> int:
             return asyncio.run(cmd_evolve(args))
         if args.command == "genome":
             return cmd_genome(args)
+    except ConfigError as exc:
+        _say(f"config error: {exc}")
+        return 2
     except KeyboardInterrupt:
         _say("\ninterrupted.")
         return 130

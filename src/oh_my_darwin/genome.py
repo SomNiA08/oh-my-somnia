@@ -166,6 +166,10 @@ class Genome:
         if existing is not None:
             gene.uses, gene.wins = existing.uses, existing.wins
             gene.path = existing.path
+            # Preserve the existing lifecycle stage: an id collision must not
+            # let a runtime mutation flip a still-unproven candidate straight
+            # to active, bypassing the multi-win promotion rule.
+            gene.status = existing.status
         return gene
 
     def promote(self, gene_id: str) -> bool:
@@ -201,12 +205,20 @@ class Genome:
 
 
 def ensure_seed_genome() -> None:
-    """Copy packaged seed genes into the global genome dir on first use."""
+    """Copy packaged seed genes into the global genome dir on first use.
+
+    A `.seeded` marker records that seeding already happened, so a user who
+    deliberately removes every gene (including the seeds) doesn't get them
+    silently re-installed on the next command."""
     target = cfg_mod.genome_dir()
-    if target.is_dir() and any(target.glob("*.md")):
+    marker = target / ".seeded"
+    if marker.exists():
         return
     target.mkdir(parents=True, exist_ok=True)
-    seed_dir = Path(__file__).parent / "seed"
-    if seed_dir.is_dir():
-        for src in seed_dir.glob("*.md"):
-            (target / src.name).write_text(src.read_text(encoding="utf-8"), encoding="utf-8")
+    if not any(target.glob("*.md")):
+        seed_dir = Path(__file__).parent / "seed"
+        if seed_dir.is_dir():
+            for src in seed_dir.glob("*.md"):
+                (target / src.name).write_text(
+                    src.read_text(encoding="utf-8"), encoding="utf-8")
+    marker.touch()

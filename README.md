@@ -100,6 +100,42 @@ scope = "global"        # 학습을 전 프로젝트 공유("global") 또는 "pr
    표시로 주입되며, 통과 실행에서 2회 검증되면 자동 승격.
    `darwin genome promote/rm`으로 수동 관리도 가능.
 
+## 멀티 머신 워크플로 (회사 ↔ 집)
+
+이 저장소를 원격(GitHub 등)에 올려두고 양쪽 머신에서 push/pull 하며 쓰는 흐름:
+
+```bash
+# ── 처음 한 번: 원격 연결 (이 머신) ──
+cd C:\work\oh-my-darwin
+git remote add origin <YOUR_REMOTE_URL>   # 예: https://github.com/<you>/oh-my-darwin.git
+git push -u origin main
+
+# ── 다른 머신 최초 설정 ──
+git clone <YOUR_REMOTE_URL> oh-my-darwin
+cd oh-my-darwin && pip install -e .       # Python 3.11+ / Claude Code CLI 로그인 필요
+
+# ── 일상 루틴 (양쪽 공통) ──
+git pull          # 시작할 때
+# ... darwin 사용/개발 ...
+git add -A && git commit -m "..." && git push   # 끝날 때
+```
+
+### 학습(게놈)도 머신 간에 공유하려면
+
+기본 `scope = "global"`은 게놈을 `~/.oh-my-darwin/genome`에 저장하므로 **머신마다
+따로** 쌓입니다. 진화된 학습까지 동기화하려면 둘 중 하나:
+
+1. **프로젝트 단위 공유** — 각 프로젝트의 `.darwin/config.toml`에
+   `scope = "project"`: 유전자가 `.darwin/genome/`에 저장되어 그 프로젝트
+   저장소와 함께 push/pull됨.
+2. **전역 학습 공유** — `~/.oh-my-darwin` 자체를 git 저장소로:
+   ```bash
+   cd ~/.oh-my-darwin && git init -b main
+   printf "sandboxes/\n" > .gitignore     # 샌드박스는 제외, genome/history만 공유
+   git add -A && git commit -m "darwin brain" && git remote add origin <BRAIN_URL> && git push -u origin main
+   ```
+   양쪽 머신에서 주기적으로 pull/push하면 하네스의 "뇌"가 함께 진화합니다.
+
 ## 저장소 구조
 
 ```
@@ -117,6 +153,15 @@ scope = "global"        # 학습을 전 프로젝트 공유("global") 또는 "pr
 - worktree 샌드박스는 HEAD + 커밋 안 된 변경분으로 구성되므로, gitignore된
   빌드 산출물(`.venv`, `node_modules` 등)은 샌드박스에 없음 —
   `fitness_command`는 프로젝트 트리 밖에서도 실행 가능해야 함.
+- `--in-place`는 세대 간 리셋 없이 **실제 프로젝트에 누적** 실행됨 (실행 시
+  경고 출력, 이전 세대의 잔여 변경이 있다는 컨텍스트를 에이전트에 전달).
+  안전한 기본값은 샌드박스 모드.
+- 샌드박스 경로가 `~/.oh-my-darwin/sandboxes/...` 아래 깊게 중첩되므로 경로가
+  긴 프로젝트에서는 Windows MAX_PATH(260자) 제한에 걸릴 수 있음 — 이 경우
+  `OH_MY_DARWIN_HOME=C:\dw` 처럼 짧은 경로로 옮기거나 Windows LongPaths를
+  활성화.
+- 샌드박스 ignore는 이름 단위(모든 깊이) 매칭 — 프로젝트에 `build`/`dist`
+  같은 이름의 실제 소스 디렉터리가 있다면 `unignore = ["build"]`로 복구.
 - 돌연변이 A/B는 표본 1회 비교라 통계적으로 노이즈가 있음 — 그래서
   후보 유전자의 다회 검증(`uses`/`wins`) 경로를 병행.
 - 에이전트 실행 비용이 발생하므로 `max_budget_usd`와 `generations`로 통제 권장.

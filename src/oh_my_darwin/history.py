@@ -35,4 +35,6 @@ def read(limit: int | None = None, project: str | None = None) -> list[dict[str,
             if project and entry.get("project") != project:
                 continue
             entries.append(entry)
-    return entries[-limit:] if limit else entries
+    if limit is None:
+        return entries
+    return entries[-limit:] if limit > 0 else []

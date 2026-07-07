@@ -1,0 +1,5 @@
+# Normalize line endings across machines (Windows <-> anything)
+* text=auto
+*.py text
+*.md text
+*.toml text
