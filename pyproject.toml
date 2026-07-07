@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "oh-my-darwin"
+version = "0.1.0"
+description = "A self-improving agent harness: plan, execute, diagnose failures, mutate its own strategies, trial them in a sandbox, and keep only what works better."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+dependencies = [
+    "claude-agent-sdk>=0.1.0",
+]
+
+[project.scripts]
+darwin = "oh_my_darwin.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+oh_my_darwin = ["seed/*.md"]

@@ -1,0 +1,17 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+.venv/
+venv/
+
+# OS / editors
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+
+# oh-my-darwin runtime state lives in ~/.oh-my-darwin (outside the repo).
+# Project-local state: keep genome (shareable learning), ignore nothing else.
