@@ -142,3 +142,39 @@ class TestWorktreeSubdir:
             assert (sb.path / "a.txt").read_text(encoding="utf-8") == "committed"
         finally:
             sb.destroy()
+
+
+class TestOverlay:
+
+    def _repo_with_subdir(self, tmp_path):
+        repo = _init_repo(tmp_path / "repo")
+        _write(repo, "pkg/app/a.txt", "committed")
+        _write(repo, "other/b.txt", "sibling")
+        _commit(repo)
+        return repo
+
+    def test_uncommitted_subdir_edit_visible_at_path(self, tmp_path):
+        repo = self._repo_with_subdir(tmp_path)
+        # Uncommitted edit inside the subdir we will run in.
+        _write(repo, "pkg/app/a.txt", "dirty")
+        sb = Sandbox.create(repo / "pkg" / "app", tmp_path / "sb", "gen-0",
+                            ignores=set(), mode="worktree")
+        try:
+            assert (sb.path / "a.txt").read_text(encoding="utf-8") == "dirty"
+        finally:
+            sb.destroy()
+
+    def test_uncommitted_sibling_edit_visible_in_checkout_only(self, tmp_path):
+        repo = self._repo_with_subdir(tmp_path)
+        # Uncommitted edit in a sibling package, outside the subdir.
+        _write(repo, "other/b.txt", "dirty sibling")
+        sb = Sandbox.create(repo / "pkg" / "app", tmp_path / "sb", "gen-0",
+                            ignores=set(), mode="worktree")
+        try:
+            # Faithfully mirrored under the checkout root...
+            assert (sb.checkout_root / "other" / "b.txt").read_text(
+                encoding="utf-8") == "dirty sibling"
+            # ...but not under the agent's subdir work-root.
+            assert not (sb.path / "other").exists()
+        finally:
+            sb.destroy()

@@ -201,18 +201,24 @@ class Sandbox:
         return sb
 
     def _overlay_uncommitted(self) -> None:
-        """Mirror the project's uncommitted state into the worktree, so the
-        agent sees the real current tree, not just HEAD."""
+        """Mirror the whole repo's uncommitted state into the worktree
+        checkout, so the agent sees the real current tree (HEAD + working
+        changes), not just HEAD. Paths from `git status` are relative to the
+        repo toplevel, so we overlay from `repo_toplevel` onto `checkout_root`;
+        snapshot/merge remain scoped to the subdir via `self.path`."""
+        source = self.repo_toplevel or self.project_root
+        dest = self.checkout_root or self.path
+
         def blocked(rel: str) -> bool:
             return any(part in self.ignores for part in Path(rel).parts)
 
-        for status, rel, orig in _dirty_entries(self.project_root):
+        for status, rel, orig in _dirty_entries(source):
             if orig and not blocked(orig):  # rename: drop the old path
-                (self.path / orig).unlink(missing_ok=True)
+                (dest / orig).unlink(missing_ok=True)
             if blocked(rel):
                 continue
-            src = self.project_root / rel
-            dst = self.path / rel
+            src = source / rel
+            dst = dest / rel
             if "D" in status or not src.exists():
                 dst.unlink(missing_ok=True)
             elif src.is_file():
