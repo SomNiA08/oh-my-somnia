@@ -78,25 +78,37 @@ async def run_agent(
     run = AgentRun()
     parts: list[str] = []
 
-    async for message in query(prompt=prompt, options=options):
-        if isinstance(message, AssistantMessage):
-            for block in message.content:
-                if isinstance(block, TextBlock):
-                    parts.append(block.text)
-                elif ToolUseBlock is not None and isinstance(block, ToolUseBlock):
-                    try:
-                        arg = json.dumps(block.input, ensure_ascii=False)[:200]
-                    except Exception:
-                        arg = "?"
-                    parts.append(f"[tool:{block.name}] {arg}")
-        elif isinstance(message, ResultMessage):
-            run.text = message.result or ""
-            run.structured = message.structured_output
-            run.cost_usd = message.total_cost_usd or 0.0
-            run.num_turns = message.num_turns
-            run.is_error = message.is_error
-            run.subtype = message.subtype
-            run.errors = list(message.errors or [])
+    try:
+        async for message in query(prompt=prompt, options=options):
+            if isinstance(message, AssistantMessage):
+                for block in message.content:
+                    if isinstance(block, TextBlock):
+                        parts.append(block.text)
+                    elif ToolUseBlock is not None and isinstance(block, ToolUseBlock):
+                        try:
+                            arg = json.dumps(block.input, ensure_ascii=False)[:200]
+                        except Exception:
+                            arg = "?"
+                        parts.append(f"[tool:{block.name}] {arg}")
+            elif isinstance(message, ResultMessage):
+                run.text = message.result or ""
+                run.structured = message.structured_output
+                run.cost_usd = message.total_cost_usd or 0.0
+                run.num_turns = message.num_turns
+                run.is_error = message.is_error
+                run.subtype = message.subtype
+                run.errors = list(message.errors or [])
+    except Exception as exc:
+        # When the CLI emits an error result (error_max_turns,
+        # error_during_execution, ...) it exits non-zero and the SDK
+        # re-raises that at end of stream — usually AFTER the ResultMessage
+        # already arrived. Degrade to an is_error AgentRun so each phase can
+        # handle its own failure (e.g. the judge falls back to the command
+        # signal) instead of aborting the whole evolutionary run.
+        run.is_error = True
+        if not run.subtype:
+            run.subtype = "sdk_error"
+        run.errors.append(str(exc)[:500])
 
     run.transcript = "\n".join(parts)
     if not run.text:

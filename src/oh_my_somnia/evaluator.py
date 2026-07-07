@@ -91,7 +91,7 @@ async def judge(task: str, plan: Plan, *, cwd: Path, cfg: Config,
         allowed_tools=READ_ONLY_TOOLS,
         permission_mode="dontAsk",
         schema=JUDGE_SCHEMA,
-        max_turns=20,
+        max_turns=cfg.judge_max_turns,
         model=cfg.model,
         max_budget_usd=cfg.max_budget_usd,
     )

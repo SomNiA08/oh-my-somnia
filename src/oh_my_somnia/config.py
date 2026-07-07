@@ -99,6 +99,8 @@ class Config:
     executor_model: str = ""   # override just for the executor phase
     max_turns: int = 60        # executor turn cap
     planner_max_turns: int = 15
+    judge_max_turns: int = 40      # read-only inspection caps — real repos
+    diagnoser_max_turns: int = 40  # need more than toy projects
     max_budget_usd: float = 0.0  # 0 = unlimited, applies per agent call
     permission_mode: str = "acceptEdits"  # executor permission mode
 

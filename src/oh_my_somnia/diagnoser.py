@@ -61,7 +61,7 @@ async def diagnose(task: str, plan: Plan, fitness: Fitness, transcript_tail: str
         allowed_tools=READ_ONLY_TOOLS,
         permission_mode="dontAsk",
         schema=DIAGNOSIS_SCHEMA,
-        max_turns=20,
+        max_turns=cfg.diagnoser_max_turns,
         model=cfg.model,
         max_budget_usd=cfg.max_budget_usd,
     )

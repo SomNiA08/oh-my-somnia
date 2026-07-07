@@ -1,0 +1,6 @@
+# oh-my-somnia's own somnia config — the self-hosting loop.
+# Every future `somnia run` on this repository must pass its own test suite
+# before anything merges.
+fitness_command = "python -m pytest -q"
+judge = true
+generations = 3
