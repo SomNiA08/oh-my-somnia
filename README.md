@@ -102,16 +102,11 @@ scope = "global"        # 학습을 전 프로젝트 공유("global") 또는 "pr
 
 ## 멀티 머신 워크플로 (회사 ↔ 집)
 
-이 저장소를 원격(GitHub 등)에 올려두고 양쪽 머신에서 push/pull 하며 쓰는 흐름:
+원격: https://github.com/SomNiA08/oh-my-somnia — 양쪽 머신에서 push/pull 하며 쓰는 흐름:
 
 ```bash
-# ── 처음 한 번: 원격 연결 (이 머신) ──
-cd C:\work\oh-my-darwin
-git remote add origin <YOUR_REMOTE_URL>   # 예: https://github.com/<you>/oh-my-darwin.git
-git push -u origin main
-
 # ── 다른 머신 최초 설정 ──
-git clone <YOUR_REMOTE_URL> oh-my-darwin
+git clone https://github.com/SomNiA08/oh-my-somnia.git oh-my-darwin
 cd oh-my-darwin && pip install -e .       # Python 3.11+ / Claude Code CLI 로그인 필요
 
 # ── 일상 루틴 (양쪽 공통) ──
