@@ -68,3 +68,77 @@ class TestWorktreeEligible:
         eligible, reason, subpath = worktree_eligible(repo)
         assert eligible is False
         assert "no commits" in reason
+
+
+class TestWorktreeSubdir:
+
+    def _repo_with_subdir(self, tmp_path):
+        repo = _init_repo(tmp_path / "repo")
+        _write(repo, "pkg/app/a.txt", "committed")
+        _write(repo, "other/b.txt", "sibling")
+        _commit(repo)
+        return repo
+
+    def test_subdir_worktree_path_is_subpath(self, tmp_path):
+        repo = self._repo_with_subdir(tmp_path)
+        sb = Sandbox.create(repo / "pkg" / "app", tmp_path / "sb", "gen-0",
+                            ignores=set(), mode="worktree")
+        try:
+            assert sb.kind == "worktree"
+            assert sb.subpath == "pkg/app"
+            assert sb.path == sb.checkout_root / "pkg" / "app"
+            assert (sb.path / "a.txt").read_text(encoding="utf-8") == "committed"
+        finally:
+            sb.destroy()
+
+    def test_subdir_worktree_merge_maps_to_subdir(self, tmp_path):
+        repo = self._repo_with_subdir(tmp_path)
+        sb = Sandbox.create(repo / "pkg" / "app", tmp_path / "sb", "gen-0",
+                            ignores=set(), mode="worktree")
+        try:
+            (sb.path / "a.txt").write_text("changed by agent", encoding="utf-8")
+            applied, skipped = sb.merge_into_project()
+        finally:
+            sb.destroy()
+        assert skipped == []
+        assert (repo / "pkg" / "app" / "a.txt").read_text(encoding="utf-8") \
+            == "changed by agent"
+        # A sibling package in the real repo is never touched.
+        assert (repo / "other" / "b.txt").read_text(encoding="utf-8") == "sibling"
+
+    def test_destroy_removes_worktree(self, tmp_path):
+        repo = self._repo_with_subdir(tmp_path)
+        sb = Sandbox.create(repo / "pkg" / "app", tmp_path / "sb", "gen-0",
+                            ignores=set(), mode="worktree")
+        checkout = sb.checkout_root
+        sb.destroy()
+        assert not checkout.exists()
+        listing = subprocess.run(
+            [GIT, "-C", str(repo), "worktree", "list"],
+            capture_output=True, text=True).stdout
+        assert str(checkout) not in listing
+
+    def test_repo_root_worktree_regression(self, tmp_path):
+        repo = _init_repo(tmp_path / "repo")
+        _write(repo, "a.txt", "root")
+        _commit(repo)
+        sb = Sandbox.create(repo, tmp_path / "sb", "gen-0",
+                            ignores=set(), mode="worktree")
+        try:
+            assert sb.subpath == ""
+            assert sb.path == sb.checkout_root
+            assert (sb.path / "a.txt").read_text(encoding="utf-8") == "root"
+        finally:
+            sb.destroy()
+
+    def test_copy_from_subdir_regression(self, tmp_path):
+        repo = self._repo_with_subdir(tmp_path)
+        sb = Sandbox.create(repo / "pkg" / "app", tmp_path / "sb", "gen-0",
+                            ignores=set(), mode="copy")
+        try:
+            assert sb.kind == "copy"
+            assert sb.subpath == ""
+            assert sb.path == sb.checkout_root
+            assert (sb.path / "a.txt").read_text(encoding="utf-8") == "committed"
+        finally:
+            sb.destroy()

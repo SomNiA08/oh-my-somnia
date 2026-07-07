@@ -121,11 +121,21 @@ class Change:
 
 @dataclass
 class Sandbox:
-    project_root: Path
-    path: Path
+    project_root: Path      # merge-back target (the dir somnia was run in)
+    path: Path              # agent work dir == checkout_root / subpath
     ignores: set[str]
-    kind: str = "copy"  # "copy" | "worktree"
+    kind: str = "copy"      # "copy" | "worktree"
     snapshot: dict[str, str] = field(default_factory=dict)
+    # For a monorepo-subdir worktree these differ from the trivial case; for
+    # copy sandboxes and repo-root worktrees they collapse (subpath == "").
+    checkout_root: Path | None = None  # git worktree dir (whole repo)
+    repo_toplevel: Path | None = None  # real repo root; None for copy
+    subpath: str = ""                  # POSIX rel path, repo root -> project
+    overlay_baseline: set[str] = field(default_factory=set)
+
+    def __post_init__(self) -> None:
+        if self.checkout_root is None:
+            self.checkout_root = self.path
 
     # -- creation ----------------------------------------------------------
 
@@ -168,20 +178,24 @@ class Sandbox:
     @classmethod
     def _create_worktree(cls, project_root: Path, base: Path, name: str,
                          ignores: set[str]) -> "Sandbox":
-        eligible, reason, _subpath = worktree_eligible(project_root)
+        eligible, reason, subpath = worktree_eligible(project_root)
         if not eligible:
             raise RuntimeError(f"worktree sandbox unavailable: {reason}")
-        target = base / name
-        if target.exists():
-            cls._remove_worktree(project_root, target)
-        target.parent.mkdir(parents=True, exist_ok=True)
+        _, top_out = _git(project_root, "rev-parse", "--show-toplevel")
+        repo_toplevel = Path(top_out.strip())
+        checkout_root = base / name
+        if checkout_root.exists():
+            cls._remove_worktree(project_root, checkout_root)
+        checkout_root.parent.mkdir(parents=True, exist_ok=True)
         code, out = _git(project_root, "worktree", "add", "--detach",
-                         str(target), "HEAD")
+                         str(checkout_root), "HEAD")
         if code != 0:
             raise RuntimeError(f"git worktree add failed: {out.strip()[:400]}")
 
-        sb = cls(project_root=project_root, path=target, ignores=ignores,
-                 kind="worktree")
+        work = checkout_root / subpath if subpath else checkout_root
+        sb = cls(project_root=project_root, path=work, ignores=ignores,
+                 kind="worktree", checkout_root=checkout_root,
+                 repo_toplevel=repo_toplevel, subpath=subpath)
         sb._overlay_uncommitted()
         sb._take_snapshot()
         return sb
@@ -263,7 +277,7 @@ class Sandbox:
 
     def destroy(self) -> None:
         if self.kind == "worktree":
-            self._remove_worktree(self.project_root, self.path)
+            self._remove_worktree(self.project_root, self.checkout_root)
         else:
             shutil.rmtree(self.path, ignore_errors=True)
 
